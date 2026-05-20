@@ -1,186 +1,233 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
 import 'crypto_service.dart';
 
 class BLEService {
-
   BluetoothDevice? connectedDevice;
+  BluetoothCharacteristic? authCharacteristic;
+  BluetoothCharacteristic? configCharacteristic;
+  BluetoothCharacteristic? statusCharacteristic;
+  SecureSession? secureSession;
 
-  BluetoothCharacteristic? writeCharacteristic;
+  static const String serviceUUID = '12345678-1234-5678-1234-567812345678';
+  static const String authCharacteristicUUID =
+      '87654321-4321-8765-4321-876543210988';
+  static const String configCharacteristicUUID =
+      '87654321-4321-8765-4321-876543210987';
+  static const String statusCharacteristicUUID =
+      '87654321-4321-8765-4321-876543210989';
 
-  // UUIDs DO SERVIDOR
-  final String serviceUUID =
-      "12345678-1234-5678-1234-567812345678";
+  final StreamController<String> _statusController =
+      StreamController<String>.broadcast();
 
-  final String characteristicUUID =
-      "87654321-4321-8765-4321-876543210987";
-
-  // STREAM DE RESULTADOS
   Stream<List<ScanResult>> get scanResults =>
-      FlutterBluePlus.scanResults;
+      FlutterBluePlus.scanResults.map(_filterProvisioningDevices);
 
-  // INICIAR SCAN
+  Stream<String> get statusMessages => _statusController.stream;
+
   Future<void> startScan() async {
-
     if (await FlutterBluePlus.isSupported == false) {
-      print("Bluetooth não suportado");
+      _statusController.add('Bluetooth nao suportado');
       return;
     }
 
     await FlutterBluePlus.stopScan();
-
     await FlutterBluePlus.startScan(
+      withServices: [Guid(serviceUUID)],
       timeout: const Duration(seconds: 10),
     );
 
-    print("Scan BLE iniciado");
+    _statusController.add('Scan BLE iniciado');
   }
 
-  // CONNECT
-  Future<void> connect(
-      BluetoothDevice device
-      ) async {
-
+  Future<void> connect(BluetoothDevice device) async {
     try {
-
-      // desconectar anterior
       if (connectedDevice != null) {
-
         await connectedDevice!.disconnect();
-
-        await Future.delayed(
-          const Duration(milliseconds: 500),
-        );
+        await Future.delayed(const Duration(milliseconds: 500));
       }
 
-      writeCharacteristic = null;
+      _clearConnectionState();
 
-      // conectar
       await device.connect();
+      await device.requestMtu(512);
 
       connectedDevice = device;
+      _statusController.add('Ligado ao dispositivo');
 
-      print("Ligado ao dispositivo");
+      final services = await device.discoverServices();
 
-      // descobrir serviços
-      List<BluetoothService> services =
-      await device.discoverServices();
+      for (final service in services) {
+        if (service.uuid.toString().toLowerCase() !=
+            serviceUUID.toLowerCase()) {
+          continue;
+        }
 
-      for (var service in services) {
+        for (final characteristic in service.characteristics) {
+          final uuid = characteristic.uuid.toString().toLowerCase();
 
-        print("Serviço encontrado:");
-        print(service.uuid);
-
-        // procurar o NOSSO serviço
-        if (service.uuid.toString().toLowerCase()
-            == serviceUUID.toLowerCase()) {
-
-          for (var characteristic
-          in service.characteristics) {
-
-            print("Characteristic:");
-            print(characteristic.uuid);
-
-            // procurar characteristic correta
-            if (characteristic.uuid
-                .toString()
-                .toLowerCase() ==
-                characteristicUUID.toLowerCase()) {
-
-              writeCharacteristic =
-                  characteristic;
-
-              print(
-                "WRITE characteristic encontrada",
-              );
-            }
+          if (uuid == authCharacteristicUUID.toLowerCase()) {
+            authCharacteristic = characteristic;
+          } else if (uuid == configCharacteristicUUID.toLowerCase()) {
+            configCharacteristic = characteristic;
+          } else if (uuid == statusCharacteristicUUID.toLowerCase()) {
+            statusCharacteristic = characteristic;
           }
         }
       }
 
-      if (writeCharacteristic == null) {
-        print(
-          "Characteristic do projeto não encontrada",
+      if (authCharacteristic == null || configCharacteristic == null) {
+        throw StateError(
+          'O dispositivo nao expoe as characteristics seguras esperadas',
         );
       }
 
+      await _subscribeStatus();
+      _statusController.add('Characteristics seguras encontradas');
     } catch (e) {
-
-      print("Erro BLE connect:");
-      print(e);
+      await disconnect();
+      _statusController.add('Erro BLE connect: $e');
+      rethrow;
     }
   }
 
-  // DISCONNECT
   Future<void> disconnect() async {
-
     try {
-
       if (connectedDevice != null) {
-
         await connectedDevice!.disconnect();
-
-        connectedDevice = null;
-
-        writeCharacteristic = null;
-
-        print("Dispositivo desconectado");
       }
-
-    } catch (e) {
-
-      print("Erro disconnect:");
-      print(e);
+    } finally {
+      _clearConnectionState();
+      _statusController.add('Dispositivo desconectado');
     }
   }
 
-  // ENVIAR CREDENCIAIS
-  Future<void> sendCredentials(
-      String ssid,
-      String password
-      ) async {
+  Future<void> establishSecureSession(String provisioningPin) async {
+    if (authCharacteristic == null) {
+      throw StateError('Characteristic de autenticacao nao encontrada');
+    }
 
-    if (writeCharacteristic == null) {
-
-      print(
-        "WRITE characteristic não encontrada",
+    final pin = provisioningPin.trim();
+    if (pin.length < 4) {
+      throw ArgumentError(
+        'O PIN de provisionamento deve ter pelo menos 4 digitos',
       );
+    }
 
+    final handshake = CryptoService.createClientHandshake();
+    final clientHello = CryptoService.buildClientHello(handshake);
+
+    await _writeJson(authCharacteristic!, clientHello);
+
+    final serverHelloRaw = await authCharacteristic!.read();
+    final serverHello = jsonDecode(utf8.decode(serverHelloRaw));
+    if (serverHello is! Map<String, dynamic>) {
+      throw const FormatException('Resposta de autenticacao invalida');
+    }
+
+    final session = CryptoService.createSession(
+      handshake: handshake,
+      serverHello: serverHello,
+      provisioningPin: pin,
+    );
+
+    final serverPublicKey = base64Decode(serverHello['server_public_key']);
+    final clientProof = CryptoService.createProof(
+      session: session,
+      label: 'client',
+      clientPublicKey: handshake.publicKey,
+      peerPublicKey: Uint8List.fromList(serverPublicKey),
+    );
+
+    await _writeJson(authCharacteristic!, {
+      'type': 'client_proof',
+      'version': CryptoService.protocolVersion,
+      'session_id': session.sessionId,
+      'client_proof': clientProof,
+    });
+
+    secureSession = session;
+    _statusController.add('Sessao segura estabelecida');
+  }
+
+  Future<void> sendCredentials({
+    required String ssid,
+    required String password,
+    required String provisioningPin,
+  }) async {
+    if (configCharacteristic == null) {
+      throw StateError('Characteristic de configuracao nao encontrada');
+    }
+
+    if (ssid.trim().isEmpty || password.isEmpty) {
+      throw ArgumentError('SSID e password sao obrigatorios');
+    }
+
+    if (secureSession == null) {
+      await establishSecureSession(provisioningPin);
+    }
+
+    final payload = CryptoService.encryptPayload(
+      session: secureSession!,
+      ssid: ssid.trim(),
+      password: password,
+    );
+
+    await _writeJson(configCharacteristic!, payload);
+    _statusController.add('Credenciais cifradas enviadas');
+  }
+
+  Future<void> dispose() async {
+    await disconnect();
+    await _statusController.close();
+  }
+
+  List<ScanResult> _filterProvisioningDevices(List<ScanResult> results) {
+    return results.where((result) {
+      final advertisedService = result.advertisementData.serviceUuids.any(
+        (uuid) => uuid.toString().toLowerCase() == serviceUUID.toLowerCase(),
+      );
+      final expectedName =
+          result.device.platformName == 'IoT_Provisioner' ||
+          result.advertisementData.advName == 'IoT_Provisioner';
+
+      return advertisedService || expectedName;
+    }).toList();
+  }
+
+  Future<void> _subscribeStatus() async {
+    final characteristic = statusCharacteristic;
+    if (characteristic == null) {
       return;
     }
 
-    try {
+    await characteristic.setNotifyValue(true);
+    characteristic.lastValueStream.listen((value) {
+      if (value.isEmpty) {
+        return;
+      }
 
-      // payload AES
-      final payload =
-      CryptoService.encryptPayload(
-        ssid,
-        password,
-      );
+      _statusController.add(utf8.decode(value, allowMalformed: true));
+    });
+  }
 
-      // JSON
-      final jsonPayload =
-      jsonEncode(payload);
+  Future<void> _writeJson(
+    BluetoothCharacteristic characteristic,
+    Map<String, dynamic> payload,
+  ) async {
+    final bytes = utf8.encode(jsonEncode(payload));
+    await characteristic.write(bytes, withoutResponse: false);
+  }
 
-      print("Payload enviado:");
-      print(jsonPayload);
-
-      // enviar BLE
-      await writeCharacteristic!.write(
-        utf8.encode(jsonPayload),
-        withoutResponse: false,
-      );
-
-      print(
-        "Credenciais enviadas com sucesso",
-      );
-
-    } catch (e) {
-
-      print("Erro envio BLE:");
-      print(e);
-    }
+  void _clearConnectionState() {
+    connectedDevice = null;
+    authCharacteristic = null;
+    configCharacteristic = null;
+    statusCharacteristic = null;
+    secureSession = null;
   }
 }
