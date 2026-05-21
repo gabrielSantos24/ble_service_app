@@ -24,8 +24,7 @@ class BLEService {
   final StreamController<String> _statusController =
       StreamController<String>.broadcast();
 
-  Stream<List<ScanResult>> get scanResults =>
-      FlutterBluePlus.scanResults.map(_filterProvisioningDevices);
+  Stream<List<ScanResult>> get scanResults => FlutterBluePlus.scanResults;
 
   Stream<String> get statusMessages => _statusController.stream;
 
@@ -36,12 +35,9 @@ class BLEService {
     }
 
     await FlutterBluePlus.stopScan();
-    await FlutterBluePlus.startScan(
-      withServices: [Guid(serviceUUID)],
-      timeout: const Duration(seconds: 10),
-    );
+    await FlutterBluePlus.startScan(timeout: const Duration(seconds: 10));
 
-    _statusController.add('Scan BLE iniciado');
+    _statusController.add('Scan BLE iniciado: a mostrar todos os dispositivos');
   }
 
   Future<void> connect(BluetoothDevice device) async {
@@ -184,19 +180,6 @@ class BLEService {
   Future<void> dispose() async {
     await disconnect();
     await _statusController.close();
-  }
-
-  List<ScanResult> _filterProvisioningDevices(List<ScanResult> results) {
-    return results.where((result) {
-      final advertisedService = result.advertisementData.serviceUuids.any(
-        (uuid) => uuid.toString().toLowerCase() == serviceUUID.toLowerCase(),
-      );
-      final expectedName =
-          result.device.platformName == 'IoT_Provisioner' ||
-          result.advertisementData.advName == 'IoT_Provisioner';
-
-      return advertisedService || expectedName;
-    }).toList();
   }
 
   Future<void> _subscribeStatus() async {

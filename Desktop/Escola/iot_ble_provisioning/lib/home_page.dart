@@ -20,7 +20,7 @@ class _HomePageState extends State<HomePage> {
 
   StreamSubscription<String>? statusSubscription;
   BluetoothDevice? selectedDevice;
-  String statusMessage = 'A procurar dispositivos BLE seguros...';
+  String statusMessage = 'A procurar dispositivos BLE perto de si...';
   bool isConnecting = false;
   bool isSending = false;
 
@@ -59,7 +59,7 @@ class _HomePageState extends State<HomePage> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const Text(
-              'Dispositivos BLE de provisionamento',
+              'Dispositivos BLE encontrados',
               style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 8),
@@ -77,7 +77,7 @@ class _HomePageState extends State<HomePage> {
 
                   if (devices.isEmpty) {
                     return const Center(
-                      child: Text('A procurar dispositivos BLE seguros...'),
+                      child: Text('A procurar dispositivos BLE perto de si...'),
                     );
                   }
 
@@ -134,7 +134,7 @@ class _HomePageState extends State<HomePage> {
                                       selectedDevice = null;
                                     });
                                     _showSnackBar(
-                                      'Falha ao ligar ao dispositivo seguro',
+                                      'Falha ao ligar ao dispositivo',
                                     );
                                   } finally {
                                     if (mounted) {
