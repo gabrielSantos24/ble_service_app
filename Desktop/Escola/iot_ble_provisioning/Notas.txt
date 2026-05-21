@@ -1,0 +1,157 @@
+1. App gera chave ECDH + clientNonce
+2. App envia client_hello
+3. Servidor responde com server_public_key + serverNonce + sessionId
+4. App calcula segredo ECDH
+5. App mistura nonces
+6. App deriva chave AES usando HKDF + PIN
+7. App valida serverProof
+8. App envia clientProof
+9. App cifra SSID/password com AES-GCM
+10. Servidor desencripta com a mesma chave de sessão
+
+
+
+1. Eavesdropping
+
+Problema no relatório: um atacante perto pode capturar os pacotes BLE e ver as credenciais Wi-Fi se forem enviadas em claro.
+
+Implementação na app:
+
+Em CryptoService.encryptPayload, o SSID e a password são cifrados com AES-GCM.
+A chave AES já não é fixa; é criada por sessão.
+O payload enviado contém ciphertext, nonce, session_id e aad.
+Isto responde ao requisito de cifragem end-to-end descrito no relatório.
+
+Estado do lado da app: resolvido na app. Mas só fica resolvido no sistema completo quando o servidor desencriptar com a mesma chave de sessão.
+
+2. Chave fixa insegura
+
+Problema real no código antigo: a app tinha isto:
+
+Key.fromUtf8('1234567890123456')
+Isto é fraco porque a chave fica dentro da app. Num APK, poderia ser extraída.
+
+Implementação nova:
+
+A app gera um par de chaves ECDH temporário.
+Recebe a chave pública do servidor.
+Calcula um segredo partilhado.
+Deriva uma chave AES nova para aquela sessão.
+Isto está ligado à parte do relatório que diz que, como o BLE 4.1 não tem LE Secure Connections, é necessário criar segurança própria na aplicação.
+
+Estado do lado da app: resolvido. Já não há chave AES fixa para as credenciais.
+
+3. MITM
+
+Problema no relatório: no BLE 4.1, o emparelhamento legacy, especialmente “Just Works”, não protege bem contra Man-in-the-Middle.
+
+Implementação na app:
+
+A app usa ECDH para criar uma chave partilhada.
+O PIN de provisionamento entra na derivação da chave.
+A app consegue verificar um server_proof, se o servidor o enviar.
+A app também envia um client_proof.
+Isto tenta resolver o problema de MITM ao nível da aplicação.
+
+Mas há um detalhe importante: neste momento, no código da app, o server_proof está como opcional. Ou seja, se o servidor não mandar prova, a app ainda cria a sessão. Para ficar totalmente alinhado com o relatório, o server_proof deve ser obrigatório.
+
+Estado do lado da app: parcialmente resolvido. A base está feita, mas eu recomendaria tornar a prova do servidor obrigatória.
+
+4. Spoofing
+
+Problema no relatório: um atacante pode criar um dispositivo BLE falso com nome parecido e tentar receber as credenciais.
+
+Implementação na app:
+
+A app descobre serviços depois de ligar.
+Só aceita enviar credenciais se o dispositivo tiver as characteristics esperadas:
+autenticação;
+configuração;
+estado.
+O PIN e o server_proof servem para confirmar que o dispositivo conhece o segredo esperado.
+Mas como tu pediste para mostrar todos os dispositivos BLE próximos, a lista agora mostra tudo. Isto é bom para testes, mas significa que a proteção contra spoofing acontece depois, na ligação/handshake, não no scan.
+
+Estado do lado da app: parcialmente resolvido. A app valida no momento da ligação/envio, mas para ficar mais forte o servidor deve enviar sempre server_proof e o PIN deve ser obrigatório.
+
+5. Replay attacks
+
+Problema no relatório: um atacante pode capturar uma mensagem válida e reenviá-la mais tarde.
+
+Implementação na app:
+
+A app gera clientNonce.
+Espera serverNonce.
+Usa sessionId.
+O payload cifrado inclui timestamp.
+Cada envio usa um nonce AES-GCM novo.
+Isto está alinhado com a secção do relatório sobre nonces e sessões.
+
+Mas a proteção contra replay não depende só da app. O servidor tem de:
+
+rejeitar session_id antigo;
+rejeitar nonces repetidos;
+validar timestamps;
+aceitar cada sessão apenas uma vez.
+Estado do lado da app: preparado, mas não completamente resolvido sozinho. Replay só fica resolvido com validação no servidor.
+
+6. Integridade
+
+Problema no relatório: um atacante pode modificar mensagens BLE.
+
+Implementação na app:
+
+AES-GCM dá confidencialidade e integridade.
+Se o ciphertext, o nonce ou o aad forem alterados, a desencriptação no servidor deve falhar.
+As provas HMAC também validam o handshake.
+Estado do lado da app: resolvido do lado da geração das mensagens. Mas o servidor tem de validar corretamente o AES-GCM e rejeitar qualquer erro.
+
+7. Autenticação mútua
+
+Problema no relatório: a app deve autenticar o dispositivo, e o dispositivo deve autenticar a app.
+
+Implementação na app:
+
+App envia client_hello.
+Servidor deve responder com server_hello.
+App calcula chave de sessão.
+App verifica server_proof.
+App envia client_proof.
+Isto corresponde diretamente à fase “Autenticação” do relatório.
+
+Estado do lado da app: incompleto enquanto o server_proof for opcional. A estrutura existe, mas para dizer que está mesmo resolvido, a app deve exigir sempre prova do servidor.
+
+8. BLE 4.1
+
+Como vamos usar Bluetooth 4.1, isto é muito importante:
+
+BLE 4.1 não tem LE Secure Connections.
+O modo “Just Works” é vulnerável a MITM.
+A segurança nativa do BLE não chega.
+Portanto, a app não deve confiar no emparelhamento BLE.
+A implementação atual segue essa ideia: a proteção está na aplicação, usando ECDH, PIN, nonces, HMAC e AES-GCM.
+
+Mas também significa que não basta “estar ligado por BLE”. A ligação BLE é só o canal. A confiança vem do protocolo por cima.
+
+Conclusão
+
+Do lado da app, a maior parte da estrutura de segurança já está implementada:
+
+chave fixa removida;
+AES-GCM por sessão;
+ECDH;
+nonces;
+session_id;
+PIN de provisionamento;
+provas HMAC;
+suporte para characteristics separadas;
+payload estruturado para replay/integridade.
+Mas eu não diria que está tudo 100% resolvido do lado da app ainda.
+
+Faltam principalmente estes ajustes:
+
+Tornar o server_proof obrigatório.
+Talvez impedir envio se o PIN estiver vazio ou fraco, já está mínimo 4 dígitos, mas podia ser melhor.
+Garantir que a app não reutiliza uma sessão antiga depois de erro/desconexão.
+Definir exatamente com o servidor o formato final do server_hello, client_proof e payload AES-GCM.
+Depois testar contra o servidor real.
+Portanto: a app já está alinhada com a arquitetura de segurança do relatório, especialmente tendo em conta o BLE 4.1, mas ainda não está completamente fechada enquanto a prova do servidor não for obrigatória e enquanto o servidor não implementar a outra metade do protocolo.

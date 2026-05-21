@@ -6,7 +6,7 @@ import 'package:crypto/crypto.dart';
 import 'package:encrypt/encrypt.dart' hide SecureRandom;
 import 'package:pointycastle/export.dart';
 
-class SecureSession {
+class SecureSession {  //para guardar os dados da sessão (anti replay)
   SecureSession({
     required this.sessionId,
     required this.key,
@@ -20,7 +20,7 @@ class SecureSession {
   final Uint8List serverNonce;
 }
 
-class ClientHandshake {
+class ClientHandshake {  // inicio do handshake com chaves ECDH
   ClientHandshake({
     required this.privateKey,
     required this.publicKey,
@@ -32,10 +32,10 @@ class ClientHandshake {
   final Uint8List clientNonce;
 }
 
-class CryptoService {
+class CryptoService { //
   static const int protocolVersion = 1;
-  static final ECDomainParameters _domain = ECDomainParameters('prime256v1');
-  static final Random _random = Random.secure();
+  static final ECDomainParameters _domain = ECDomainParameters('prime256v1'); // esta é a curva do ECDH
+  static final Random _random = Random.secure(); // para nonces
 
   static ClientHandshake createClientHandshake() {
     final secureRandom = _secureRandom();
@@ -50,7 +50,7 @@ class CryptoService {
 
     return ClientHandshake(
       privateKey: privateKey,
-      publicKey: Uint8List.fromList(publicKey.Q!.getEncoded(false)),
+      publicKey: Uint8List.fromList(publicKey.Q!.getEncoded(false)), // codifica a chave publica em formato nao comprimido
       clientNonce: _randomBytes(16),
     );
   }
@@ -66,7 +66,7 @@ class CryptoService {
 
   static SecureSession createSession({
     required ClientHandshake handshake,
-    required Map<String, dynamic> serverHello,
+    required Map<String, dynamic> serverHello, // resposta do servidor
     required String provisioningPin,
   }) {
     final serverNonce = _readBase64(serverHello, 'server_nonce');
@@ -88,8 +88,8 @@ class CryptoService {
       ikm: sharedSecret,
       salt: nonceSalt,
       info: utf8.encode(
-        'ble-provisioning-v$protocolVersion|$sessionId|$provisioningPin',
-      ),
+        'ble-provisioning-v$protocolVersion|$sessionId|$provisioningPin', // PIN obriga a app e o servidor a conhecer o mesmo segredo
+      ), // ajuda com spoofing e MITM
       length: 16,
     );
 
@@ -116,7 +116,7 @@ class CryptoService {
     return session;
   }
 
-  static String createProof({
+  static String createProof({ // prova criptografica
     required SecureSession session,
     required String label,
     required Uint8List clientPublicKey,
@@ -131,7 +131,7 @@ class CryptoService {
     ];
 
     return base64Encode(
-      Hmac(sha256, session.key.bytes).convert(transcript).bytes,
+      Hmac(sha256, session.key.bytes).convert(transcript).bytes, // so quem tem a chave AES consegue produzir a prova
     );
   }
 
@@ -149,7 +149,7 @@ class CryptoService {
       'timestamp': DateTime.now().toUtc().millisecondsSinceEpoch,
     });
 
-    final aad = utf8.encode(
+    final aad = utf8.encode( // Additional Authenticated Data
       'ble-provisioning-v$protocolVersion|${session.sessionId}',
     );
     final encrypted = encrypter.encrypt(data, iv: iv, associatedData: aad);
@@ -181,7 +181,7 @@ class CryptoService {
     return _bigIntToFixedLengthBytes(sharedSecret, 32);
   }
 
-  static List<int> _hkdfSha256({
+  static List<int> _hkdfSha256({ // transforma o segredo bruto numa chave AES
     required List<int> ikm,
     required List<int> salt,
     required List<int> info,
