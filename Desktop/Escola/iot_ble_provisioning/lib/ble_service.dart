@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
+import 'dart:io';
 
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 
@@ -15,11 +16,13 @@ class BLEService {
 
   static const String serviceUUID = '12345678-1234-5678-1234-567812345678';
   static const String authCharacteristicUUID =
-      '87654321-4321-8765-4321-876543210988';
-  static const String configCharacteristicUUID =
-      '87654321-4321-8765-4321-876543210987';
-  static const String statusCharacteristicUUID =
-      '87654321-4321-8765-4321-876543210989';
+    '12345678-1234-5678-1234-567812345679';
+
+static const String configCharacteristicUUID =
+    '12345678-1234-5678-1234-567812345680';
+
+static const String statusCharacteristicUUID =
+    '12345678-1234-5678-1234-567812345681';
 
   final StreamController<String> _statusController =
       StreamController<String>.broadcast();
@@ -29,67 +32,88 @@ class BLEService {
   Stream<String> get statusMessages => _statusController.stream;
 
   Future<void> startScan() async {
+  try {
     if (await FlutterBluePlus.isSupported == false) {
       _statusController.add('Bluetooth nao suportado');
       return;
     }
 
-    await FlutterBluePlus.stopScan();
-    await FlutterBluePlus.startScan(timeout: const Duration(seconds: 10));
+    final adapterState = await FlutterBluePlus.adapterState.first;
 
-    _statusController.add('Scan BLE iniciado: a mostrar todos os dispositivos');
+    if (adapterState != BluetoothAdapterState.on) {
+      _statusController.add('Bluetooth desligado ou sem permissao: $adapterState');
+      return;
+    }
+
+    await FlutterBluePlus.stopScan();
+
+    _statusController.add('Scan BLE iniciado para IoT_Provisioner...');
+
+    await FlutterBluePlus.startScan(
+      withServices: [Guid(serviceUUID)],
+      timeout: const Duration(seconds: 15),
+    );
+  } catch (e) {
+    _statusController.add('Erro ao iniciar scan BLE: $e');
   }
+}
 
   Future<void> connect(BluetoothDevice device) async {
-    try {
-      if (connectedDevice != null) {
-        await connectedDevice!.disconnect();
-        await Future.delayed(const Duration(milliseconds: 500));
-      }
-
-      _clearConnectionState();
-
-      await device.connect();
-      await device.requestMtu(512);
-
-      connectedDevice = device;
-      _statusController.add('Ligado ao dispositivo');
-
-      final services = await device.discoverServices();
-
-      for (final service in services) {
-        if (service.uuid.toString().toLowerCase() !=
-            serviceUUID.toLowerCase()) {
-          continue;
-        }
-
-        for (final characteristic in service.characteristics) {
-          final uuid = characteristic.uuid.toString().toLowerCase();
-
-          if (uuid == authCharacteristicUUID.toLowerCase()) {
-            authCharacteristic = characteristic;
-          } else if (uuid == configCharacteristicUUID.toLowerCase()) {
-            configCharacteristic = characteristic;
-          } else if (uuid == statusCharacteristicUUID.toLowerCase()) {
-            statusCharacteristic = characteristic;
-          }
-        }
-      }
-
-      if (authCharacteristic == null || configCharacteristic == null) {
-        throw StateError(
-          'O dispositivo nao expoe as characteristics seguras esperadas',
-        );
-      }
-
-      await _subscribeStatus();
-      _statusController.add('Characteristics seguras encontradas');
-    } catch (e) {
-      await disconnect();
-      _statusController.add('Erro BLE connect: $e');
-      rethrow;
+  try {
+    if (connectedDevice != null) {
+      await connectedDevice!.disconnect();
+      await Future.delayed(const Duration(milliseconds: 500));
     }
+
+    _clearConnectionState();
+
+    await FlutterBluePlus.stopScan();
+
+    await device.connect(
+      timeout: const Duration(seconds: 15),
+      autoConnect: false,
+    );
+
+    if (Platform.isAndroid) {
+      await device.requestMtu(512);
+    }
+
+    await Future.delayed(const Duration(seconds: 1));
+
+    connectedDevice = device;
+    _statusController.add('Ligado ao dispositivo. A procurar services...');
+
+    final services = await device.discoverServices();
+
+    for (final service in services) {
+      for (final characteristic in service.characteristics) {
+        final uuid = characteristic.uuid.toString().toLowerCase();
+
+        if (uuid == authCharacteristicUUID.toLowerCase()) {
+          authCharacteristic = characteristic;
+        } else if (uuid == configCharacteristicUUID.toLowerCase()) {
+          configCharacteristic = characteristic;
+        } else if (uuid == statusCharacteristicUUID.toLowerCase()) {
+          statusCharacteristic = characteristic;
+        }
+      }
+    }
+
+    if (authCharacteristic == null || configCharacteristic == null) {
+      throw StateError(
+        'O dispositivo nao expoe as characteristics seguras esperadas',
+      );
+    }
+
+    await _subscribeStatus();
+
+    _statusController.add('Characteristics seguras encontradas');
+  } catch (e) {
+    await disconnect();
+    _statusController.add('Erro BLE connect: $e');
+    rethrow;
   }
+}
 
   Future<void> disconnect() async {
     try {

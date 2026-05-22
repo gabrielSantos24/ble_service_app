@@ -20,6 +20,7 @@ class _HomePageState extends State<HomePage> {
 
   StreamSubscription<String>? statusSubscription;
   BluetoothDevice? selectedDevice;
+
   String statusMessage = 'A procurar dispositivos BLE perto de si...';
   bool isConnecting = false;
   bool isSending = false;
@@ -27,6 +28,7 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
+
     statusSubscription = ble.statusMessages.listen((message) {
       if (!mounted) {
         return;
@@ -36,6 +38,7 @@ class _HomePageState extends State<HomePage> {
         statusMessage = message;
       });
     });
+
     ble.startScan();
   }
 
@@ -49,10 +52,29 @@ class _HomePageState extends State<HomePage> {
     super.dispose();
   }
 
+  Future<void> _restartScan() async {
+    setState(() {
+      selectedDevice = null;
+      statusMessage = 'A procurar dispositivos BLE...';
+    });
+
+    await ble.disconnect();
+    await ble.startScan();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('BLE Provisioning IoT')),
+      appBar: AppBar(
+        title: const Text('BLE Provisioning IoT'),
+        actions: [
+          IconButton(
+            onPressed: _restartScan,
+            icon: const Icon(Icons.refresh),
+            tooltip: 'Procurar novamente',
+          ),
+        ],
+      ),
       body: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
@@ -62,9 +84,22 @@ class _HomePageState extends State<HomePage> {
               'Dispositivos BLE encontrados',
               style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
             ),
+
             const SizedBox(height: 8),
-            Text(statusMessage),
+
+            StreamBuilder<List<ScanResult>>(
+              stream: ble.scanResults,
+              builder: (context, snapshot) {
+                final count = snapshot.data?.length ?? 0;
+
+                return Text(
+                  '$statusMessage\nDispositivos detetados pelo Flutter: $count',
+                );
+              },
+            ),
+
             const SizedBox(height: 10),
+
             Expanded(
               child: StreamBuilder<List<ScanResult>>(
                 stream: ble.scanResults,
@@ -76,8 +111,22 @@ class _HomePageState extends State<HomePage> {
                   final devices = snapshot.data!;
 
                   if (devices.isEmpty) {
-                    return const Center(
-                      child: Text('A procurar dispositivos BLE perto de si...'),
+                    return Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Text(
+                            'Nenhum dispositivo BLE encontrado pelo Flutter',
+                            textAlign: TextAlign.center,
+                          ),
+                          const SizedBox(height: 12),
+                          ElevatedButton.icon(
+                            onPressed: _restartScan,
+                            icon: const Icon(Icons.search),
+                            label: const Text('Procurar novamente'),
+                          ),
+                        ],
+                      ),
                     );
                   }
 
@@ -86,20 +135,27 @@ class _HomePageState extends State<HomePage> {
                     itemBuilder: (context, index) {
                       final result = devices[index];
                       final device = result.device;
+
+                      final deviceName = device.platformName.isNotEmpty
+                          ? device.platformName
+                          : result.advertisementData.advName.isNotEmpty
+                              ? result.advertisementData.advName
+                              : 'Dispositivo desconhecido';
+
                       final isSelected =
                           selectedDevice?.remoteId == device.remoteId;
 
                       return Card(
                         color: isSelected ? Colors.blue.shade100 : null,
                         child: ListTile(
-                          title: Text(
-                            device.platformName.isNotEmpty
-                                ? device.platformName
-                                : result.advertisementData.advName.isNotEmpty
-                                ? result.advertisementData.advName
-                                : 'Dispositivo desconhecido',
+                          title: Text(deviceName),
+                          subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(device.remoteId.toString()),
+                              Text('RSSI: ${result.rssi}'),
+                            ],
                           ),
-                          subtitle: Text(device.remoteId.toString()),
                           trailing: isSelected
                               ? const Icon(
                                   Icons.check_circle,
@@ -111,30 +167,51 @@ class _HomePageState extends State<HomePage> {
                               : () async {
                                   if (isSelected) {
                                     await ble.disconnect();
-                                    setState(() {
-                                      selectedDevice = null;
-                                    });
-                                    return;
-                                  }
 
-                                  setState(() {
-                                    isConnecting = true;
-                                    selectedDevice = device;
-                                    statusMessage = 'A ligar ao dispositivo...';
-                                  });
-
-                                  try {
-                                    await ble.connect(device);
-                                  } catch (e) {
-                                    if (!context.mounted) {
+                                    if (!mounted) {
                                       return;
                                     }
 
                                     setState(() {
                                       selectedDevice = null;
+                                      statusMessage =
+                                          'Dispositivo desconectado';
                                     });
+
+                                    return;
+                                  }
+
+                                  setState(() {
+                                    isConnecting = true;
+                                    selectedDevice = null;
+                                    statusMessage = 'A ligar ao dispositivo...';
+                                  });
+
+                                  try {
+                                    await ble.connect(device);
+
+                                    if (!mounted) {
+                                      return;
+                                    }
+
+                                    setState(() {
+                                      selectedDevice = device;
+                                      statusMessage =
+                                          'Ligado a $deviceName';
+                                    });
+                                  } catch (e) {
+                                    if (!mounted) {
+                                      return;
+                                    }
+
+                                    setState(() {
+                                      selectedDevice = null;
+                                      statusMessage =
+                                          'Falha ao ligar ao dispositivo';
+                                    });
+
                                     _showSnackBar(
-                                      'Falha ao ligar ao dispositivo',
+                                      'Falha ao ligar ao dispositivo: $e',
                                     );
                                   } finally {
                                     if (mounted) {
@@ -151,7 +228,9 @@ class _HomePageState extends State<HomePage> {
                 },
               ),
             ),
+
             const SizedBox(height: 20),
+
             TextField(
               controller: ssidController,
               decoration: const InputDecoration(
@@ -159,7 +238,9 @@ class _HomePageState extends State<HomePage> {
                 border: OutlineInputBorder(),
               ),
             ),
+
             const SizedBox(height: 10),
+
             TextField(
               controller: passwordController,
               decoration: const InputDecoration(
@@ -168,7 +249,9 @@ class _HomePageState extends State<HomePage> {
               ),
               obscureText: true,
             ),
+
             const SizedBox(height: 10),
+
             TextField(
               controller: pinController,
               decoration: const InputDecoration(
@@ -178,7 +261,9 @@ class _HomePageState extends State<HomePage> {
               keyboardType: TextInputType.number,
               obscureText: true,
             ),
+
             const SizedBox(height: 20),
+
             ElevatedButton(
               onPressed: isSending ? null : _sendCredentials,
               child: Text(
@@ -208,8 +293,25 @@ class _HomePageState extends State<HomePage> {
         password: passwordController.text,
         provisioningPin: pinController.text,
       );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        statusMessage = 'Credenciais cifradas enviadas';
+      });
+
       _showSnackBar('Credenciais cifradas enviadas');
     } catch (e) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        statusMessage = 'Erro no provisionamento seguro';
+      });
+
       _showSnackBar('Erro no provisionamento seguro: $e');
     } finally {
       if (mounted) {
