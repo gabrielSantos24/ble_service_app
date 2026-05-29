@@ -16,13 +16,13 @@ class BLEService {
 
   static const String serviceUUID = '12345678-1234-5678-1234-567812345678';
   static const String authCharacteristicUUID =
-    '12345678-1234-5678-1234-567812345679';
+      '12345678-1234-5678-1234-567812345679';
 
-static const String configCharacteristicUUID =
-    '12345678-1234-5678-1234-567812345680';
+  static const String configCharacteristicUUID =
+      '12345678-1234-5678-1234-567812345680';
 
-static const String statusCharacteristicUUID =
-    '12345678-1234-5678-1234-567812345681';
+  static const String statusCharacteristicUUID =
+      '12345678-1234-5678-1234-567812345681';
 
   final StreamController<String> _statusController =
       StreamController<String>.broadcast();
@@ -32,88 +32,90 @@ static const String statusCharacteristicUUID =
   Stream<String> get statusMessages => _statusController.stream;
 
   Future<void> startScan() async {
-  try {
-    if (await FlutterBluePlus.isSupported == false) {
-      _statusController.add('Bluetooth nao suportado');
-      return;
+    try {
+      if (await FlutterBluePlus.isSupported == false) {
+        _statusController.add('Bluetooth nao suportado');
+        return;
+      }
+
+      final adapterState = await FlutterBluePlus.adapterState.first;
+
+      if (adapterState != BluetoothAdapterState.on) {
+        _statusController.add(
+          'Bluetooth desligado ou sem permissao: $adapterState',
+        );
+        return;
+      }
+
+      await FlutterBluePlus.stopScan();
+
+      _statusController.add('Scan BLE iniciado para IoT_Provisioner...');
+
+      await FlutterBluePlus.startScan(
+        withServices: [Guid(serviceUUID)],
+        timeout: const Duration(seconds: 15),
+      );
+    } catch (e) {
+      _statusController.add('Erro ao iniciar scan BLE: $e');
     }
-
-    final adapterState = await FlutterBluePlus.adapterState.first;
-
-    if (adapterState != BluetoothAdapterState.on) {
-      _statusController.add('Bluetooth desligado ou sem permissao: $adapterState');
-      return;
-    }
-
-    await FlutterBluePlus.stopScan();
-
-    _statusController.add('Scan BLE iniciado para IoT_Provisioner...');
-
-    await FlutterBluePlus.startScan(
-      withServices: [Guid(serviceUUID)],
-      timeout: const Duration(seconds: 15),
-    );
-  } catch (e) {
-    _statusController.add('Erro ao iniciar scan BLE: $e');
   }
-}
 
   Future<void> connect(BluetoothDevice device) async {
-  try {
-    if (connectedDevice != null) {
-      await connectedDevice!.disconnect();
-      await Future.delayed(const Duration(milliseconds: 500));
-    }
+    try {
+      if (connectedDevice != null) {
+        await connectedDevice!.disconnect();
+        await Future.delayed(const Duration(milliseconds: 500));
+      }
 
-    _clearConnectionState();
+      _clearConnectionState();
 
-    await FlutterBluePlus.stopScan();
+      await FlutterBluePlus.stopScan();
 
-    await device.connect(
-      timeout: const Duration(seconds: 15),
-      autoConnect: false,
-    );
+      await device.connect(
+        timeout: const Duration(seconds: 15),
+        autoConnect: false,
+      );
 
-    if (Platform.isAndroid) {
-      await device.requestMtu(512);
-    }
+      if (Platform.isAndroid) {
+        await device.requestMtu(512);
+      }
 
-    await Future.delayed(const Duration(seconds: 1));
+      await Future.delayed(const Duration(seconds: 1));
 
-    connectedDevice = device;
-    _statusController.add('Ligado ao dispositivo. A procurar services...');
+      connectedDevice = device;
+      _statusController.add('Ligado ao dispositivo. A procurar services...');
 
-    final services = await device.discoverServices();
+      final services = await device.discoverServices();
 
-    for (final service in services) {
-      for (final characteristic in service.characteristics) {
-        final uuid = characteristic.uuid.toString().toLowerCase();
+      for (final service in services) {
+        for (final characteristic in service.characteristics) {
+          final uuid = characteristic.uuid.toString().toLowerCase();
 
-        if (uuid == authCharacteristicUUID.toLowerCase()) {
-          authCharacteristic = characteristic;
-        } else if (uuid == configCharacteristicUUID.toLowerCase()) {
-          configCharacteristic = characteristic;
-        } else if (uuid == statusCharacteristicUUID.toLowerCase()) {
-          statusCharacteristic = characteristic;
+          if (uuid == authCharacteristicUUID.toLowerCase()) {
+            authCharacteristic = characteristic;
+          } else if (uuid == configCharacteristicUUID.toLowerCase()) {
+            configCharacteristic = characteristic;
+          } else if (uuid == statusCharacteristicUUID.toLowerCase()) {
+            statusCharacteristic = characteristic;
+          }
         }
       }
+
+      if (authCharacteristic == null || configCharacteristic == null) {
+        throw StateError(
+          'O dispositivo nao expoe as characteristics seguras esperadas',
+        );
+      }
+
+      await _subscribeStatus();
+
+      _statusController.add('Characteristics seguras encontradas');
+    } catch (e) {
+      await disconnect();
+      _statusController.add('Erro BLE connect: $e');
+      rethrow;
     }
-
-    if (authCharacteristic == null || configCharacteristic == null) {
-      throw StateError(
-        'O dispositivo nao expoe as characteristics seguras esperadas',
-      );
-    }
-
-    await _subscribeStatus();
-
-    _statusController.add('Characteristics seguras encontradas');
-  } catch (e) {
-    await disconnect();
-    _statusController.add('Erro BLE connect: $e');
-    rethrow;
   }
-}
 
   Future<void> disconnect() async {
     try {
@@ -195,6 +197,7 @@ static const String statusCharacteristicUUID =
       session: secureSession!,
       ssid: ssid.trim(),
       password: password,
+      provisioningPin: provisioningPin.trim(),
     );
 
     await _writeJson(configCharacteristic!, payload);

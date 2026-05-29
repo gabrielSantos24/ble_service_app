@@ -6,7 +6,8 @@ import 'package:crypto/crypto.dart';
 import 'package:encrypt/encrypt.dart' hide SecureRandom;
 import 'package:pointycastle/export.dart';
 
-class SecureSession {  //para guardar os dados da sessão (anti replay)
+class SecureSession {
+  //para guardar os dados da sessão (anti replay)
   SecureSession({
     required this.sessionId,
     required this.key,
@@ -20,7 +21,8 @@ class SecureSession {  //para guardar os dados da sessão (anti replay)
   final Uint8List serverNonce;
 }
 
-class ClientHandshake {  // inicio do handshake com chaves ECDH
+class ClientHandshake {
+  // inicio do handshake com chaves ECDH
   ClientHandshake({
     required this.privateKey,
     required this.publicKey,
@@ -32,9 +34,12 @@ class ClientHandshake {  // inicio do handshake com chaves ECDH
   final Uint8List clientNonce;
 }
 
-class CryptoService { //
+class CryptoService {
+  //
   static const int protocolVersion = 1;
-  static final ECDomainParameters _domain = ECDomainParameters('prime256v1'); // esta é a curva do ECDH
+  static final ECDomainParameters _domain = ECDomainParameters(
+    'prime256v1',
+  ); // esta é a curva do ECDH
   static final Random _random = Random.secure(); // para nonces
 
   static ClientHandshake createClientHandshake() {
@@ -50,7 +55,9 @@ class CryptoService { //
 
     return ClientHandshake(
       privateKey: privateKey,
-      publicKey: Uint8List.fromList(publicKey.Q!.getEncoded(false)), // codifica a chave publica em formato nao comprimido
+      publicKey: Uint8List.fromList(
+        publicKey.Q!.getEncoded(false),
+      ), // codifica a chave publica em formato nao comprimido
       clientNonce: _randomBytes(16),
     );
   }
@@ -78,6 +85,10 @@ class CryptoService { //
       throw const FormatException('session_id em falta no servidor');
     }
 
+    if (serverProof == null || serverProof.isEmpty) {
+      throw const FormatException('server_proof em falta no servidor');
+    }
+
     final sharedSecret = _calculateSharedSecret(
       handshake.privateKey,
       serverPublicKeyBytes,
@@ -100,23 +111,22 @@ class CryptoService { //
       serverNonce: serverNonce,
     );
 
-    if (serverProof != null && serverProof.isNotEmpty) {
-      final expectedProof = createProof(
-        session: session,
-        label: 'server',
-        clientPublicKey: handshake.publicKey,
-        peerPublicKey: serverPublicKeyBytes,
-      );
+    final expectedProof = createProof(
+      session: session,
+      label: 'server',
+      clientPublicKey: handshake.publicKey,
+      peerPublicKey: serverPublicKeyBytes,
+    );
 
-      if (!_constantTimeEquals(serverProof, expectedProof)) {
-        throw const FormatException('prova criptografica do servidor invalida');
-      }
+    if (!_constantTimeEquals(serverProof, expectedProof)) {
+      throw const FormatException('prova criptografica do servidor invalida');
     }
 
     return session;
   }
 
-  static String createProof({ // prova criptografica
+  static String createProof({
+    // prova criptografica
     required SecureSession session,
     required String label,
     required Uint8List clientPublicKey,
@@ -131,7 +141,9 @@ class CryptoService { //
     ];
 
     return base64Encode(
-      Hmac(sha256, session.key.bytes).convert(transcript).bytes, // so quem tem a chave AES consegue produzir a prova
+      Hmac(sha256, session.key.bytes)
+          .convert(transcript)
+          .bytes, // so quem tem a chave AES consegue produzir a prova
     );
   }
 
@@ -139,18 +151,21 @@ class CryptoService { //
     required SecureSession session,
     required String ssid,
     required String password,
+    required String provisioningPin,
   }) {
     final iv = IV.fromSecureRandom(12);
     final encrypter = Encrypter(AES(session.key, mode: AESMode.gcm));
+    final timestamp = DateTime.now().toUtc().millisecondsSinceEpoch;
 
     final data = jsonEncode({
       'ssid': ssid,
       'password': password,
-      'timestamp': DateTime.now().toUtc().millisecondsSinceEpoch,
+      'provisioning_pin': provisioningPin,
     });
 
-    final aad = utf8.encode( // Additional Authenticated Data
-      'ble-provisioning-v$protocolVersion|${session.sessionId}',
+    final aad = utf8.encode(
+      // Additional Authenticated Data
+      'ble-provisioning-v$protocolVersion|${session.sessionId}|$timestamp',
     );
     final encrypted = encrypter.encrypt(data, iv: iv, associatedData: aad);
 
@@ -158,6 +173,7 @@ class CryptoService { //
       'type': 'wifi_credentials',
       'version': protocolVersion,
       'session_id': session.sessionId,
+      'timestamp': timestamp,
       'nonce': iv.base64,
       'ciphertext': encrypted.base64,
       'aad': base64Encode(aad),
@@ -181,7 +197,8 @@ class CryptoService { //
     return _bigIntToFixedLengthBytes(sharedSecret, 32);
   }
 
-  static List<int> _hkdfSha256({ // transforma o segredo bruto numa chave AES
+  static List<int> _hkdfSha256({
+    // transforma o segredo bruto numa chave AES
     required List<int> ikm,
     required List<int> salt,
     required List<int> info,
