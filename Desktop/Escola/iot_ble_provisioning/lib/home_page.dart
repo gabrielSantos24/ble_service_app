@@ -24,6 +24,7 @@ class _HomePageState extends State<HomePage> {
   String statusMessage = 'A procurar dispositivos BLE perto de si...';
   bool isConnecting = false;
   bool isSending = false;
+  bool isPasswordVisible = false;
 
   @override
   void initState() {
@@ -139,8 +140,8 @@ class _HomePageState extends State<HomePage> {
                       final deviceName = device.platformName.isNotEmpty
                           ? device.platformName
                           : result.advertisementData.advName.isNotEmpty
-                              ? result.advertisementData.advName
-                              : 'Dispositivo desconhecido';
+                          ? result.advertisementData.advName
+                          : 'Dispositivo desconhecido';
 
                       final isSelected =
                           selectedDevice?.remoteId == device.remoteId;
@@ -196,8 +197,7 @@ class _HomePageState extends State<HomePage> {
 
                                     setState(() {
                                       selectedDevice = device;
-                                      statusMessage =
-                                          'Ligado a $deviceName';
+                                      statusMessage = 'Ligado a $deviceName';
                                     });
                                   } catch (e) {
                                     if (!mounted) {
@@ -243,11 +243,24 @@ class _HomePageState extends State<HomePage> {
 
             TextField(
               controller: passwordController,
-              decoration: const InputDecoration(
+              decoration: InputDecoration(
                 labelText: 'Password',
-                border: OutlineInputBorder(),
+                border: const OutlineInputBorder(),
+                suffixIcon: IconButton(
+                  onPressed: () {
+                    setState(() {
+                      isPasswordVisible = !isPasswordVisible;
+                    });
+                  },
+                  icon: Icon(
+                    isPasswordVisible ? Icons.visibility_off : Icons.visibility,
+                  ),
+                  tooltip: isPasswordVisible
+                      ? 'Ocultar password'
+                      : 'Mostrar password',
+                ),
               ),
-              obscureText: true,
+              obscureText: !isPasswordVisible,
             ),
 
             const SizedBox(height: 10),
